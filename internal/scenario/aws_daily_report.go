@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -208,14 +209,14 @@ func (ctx *awsDailyReportContext) payload() *webhook.Payload {
 	}
 	formatValue := func(r *costexplorer.ResultByTime) string {
 		const metric = "BlendedCost" // FIX THIS HARD CODE
-		amount := aws.StringValue(r.Total[metric].Amount)
-		unit := aws.StringValue(r.Total[metric].Unit)
-		return fmt.Sprintf("%s %s", amount, unit)
+		amount := StripDot(aws.StringValue(r.Total[metric].Amount))
+		unit := Emojify(aws.StringValue(r.Total[metric].Unit))
+		return fmt.Sprintf("%s%s", unit, amount)
 	}
 	formatForecast := func(mv *costexplorer.MetricValue) string {
-		amount := aws.StringValue(mv.Amount)
-		unit := aws.StringValue(mv.Unit)
-		return fmt.Sprintf("%s %s", amount, unit)
+		amount := StripDot(aws.StringValue(mv.Amount))
+		unit := Emojify(aws.StringValue(mv.Unit))
+		return fmt.Sprintf("%s%s", unit, amount)
 	}
 	payload := &webhook.Payload{
 		Text: ":chart:  AWS Cost Report",
@@ -256,4 +257,21 @@ func (ctx *awsDailyReportContext) errPayload() *webhook.Payload {
 		},
 	}
 	return payload
+}
+
+// StripDot strip dot from unit. ex 4075.123456 -> 4075
+func StripDot(amount string) string {
+	dot := strings.Index(amount, ".")
+	if dot == -1 {
+		return amount
+	}
+	return amount[:dot]
+}
+
+// Emojify convert USD -> :heavy_dollar_sign:
+func Emojify(unit string) string {
+	if strings.TrimSpace(unit) == "USD" {
+		return "$"
+	}
+	return unit
 }
