@@ -40,10 +40,11 @@ func AWSDailyReport(reporter Reporter, notificator Notificator) error {
 }
 
 type awsDailyReportContext struct {
-	CostOfYesterday  *costexplorer.ResultByTime
-	MonthlySumOfCost *costexplorer.ResultByTime
-	MonthlyForcast   *costexplorer.GetCostForecastOutput
-	Err              error
+	CostOfYesterday    *costexplorer.ResultByTime
+	MonthlySumOfCost   *costexplorer.ResultByTime
+	MonthlyForcast     *costexplorer.GetCostForecastOutput
+	Err                error
+	SkipMonthlyForcast bool
 
 	reporter    Reporter
 	notificator Notificator
@@ -76,7 +77,7 @@ func (ctx *awsDailyReportContext) costOfYesterday() *awsDailyReportContext {
 			  }]
 		  })
 	*/
-	ctx.Err = ctx.reporter.Report(opt, func(out *costexplorer.GetCostAndUsageOutput) error {
+	err := ctx.reporter.Report(opt, func(out *costexplorer.GetCostAndUsageOutput) error {
 		results := out.ResultsByTime
 		if len(results) != 1 {
 			return fmt.Errorf("aws cost of yesterday: want just one Output.ResultsByTime, got %d results", len(results))
@@ -84,6 +85,9 @@ func (ctx *awsDailyReportContext) costOfYesterday() *awsDailyReportContext {
 		ctx.CostOfYesterday = results[0]
 		return nil
 	})
+	if err != nil {
+		ctx.Err = fmt.Errorf("cost of yesterday: %s", err)
+	}
 
 	return ctx
 }
@@ -116,7 +120,7 @@ func (ctx *awsDailyReportContext) monthlySumOfCost() *awsDailyReportContext {
 			}
 		  })
 	*/
-	ctx.Err = ctx.reporter.Report(opt, func(out *costexplorer.GetCostAndUsageOutput) error {
+	err := ctx.reporter.Report(opt, func(out *costexplorer.GetCostAndUsageOutput) error {
 		results := out.ResultsByTime
 
 		// Estimated => falseな値が返却されるため
@@ -132,6 +136,9 @@ func (ctx *awsDailyReportContext) monthlySumOfCost() *awsDailyReportContext {
 		ctx.MonthlySumOfCost = estimated[0]
 		return nil
 	})
+	if err != nil {
+		ctx.Err = fmt.Errorf("failed to monthly sum: %s", err)
+	}
 	return ctx
 }
 
@@ -139,15 +146,24 @@ func (ctx *awsDailyReportContext) monthlyForcast() *awsDailyReportContext {
 	if ctx.Err != nil {
 		return ctx
 	}
+	// その月の最後の日の場合はskipする
+	// Forcaseの仕様でかならず次の日以降をStartに指定しなければならないが、来月の予想は必要ない
 
 	start := time.Now().UTC().AddDate(0, 0, 1)
-	year, month, _ := time.Now().UTC().Date()
+	year, month, day := time.Now().UTC().Date()
 	beginOfMonth := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC) // 0日にすると先月扱いになる
-	endOfMonth := beginOfMonth.AddDate(0, 1, 0).AddDate(0, 0, -1)
+	endOfMonth := beginOfMonth.AddDate(0, 1, -1)
 	opt := &cost.AWSReportOptions{
 		Start:       start,
 		End:         endOfMonth,
 		Granularity: cost.Monthly,
+	}
+
+	if day == endOfMonth.Day() {
+		fmt.Println("today is endOfMonth. skip monthly forcast")
+		ctx.SkipMonthlyForcast = true
+		ctx.MonthlyForcast = &costexplorer.GetCostForecastOutput{}
+		return ctx
 	}
 
 	/*
@@ -167,10 +183,13 @@ func (ctx *awsDailyReportContext) monthlyForcast() *awsDailyReportContext {
 		  }
 		})
 	*/
-	ctx.Err = ctx.reporter.Forecast(opt, func(out *costexplorer.GetCostForecastOutput) error {
+	err := ctx.reporter.Forecast(opt, func(out *costexplorer.GetCostForecastOutput) error {
 		ctx.MonthlyForcast = out
 		return nil
 	})
+	if err != nil {
+		ctx.Err = fmt.Errorf("failed to monthly forcast: %s", err)
+	}
 	return ctx
 }
 
@@ -214,6 +233,9 @@ func (ctx *awsDailyReportContext) payload() *webhook.Payload {
 		return fmt.Sprintf("%s%s", unit, amount)
 	}
 	formatForecast := func(mv *costexplorer.MetricValue) string {
+		if ctx.SkipMonthlyForcast || mv == nil {
+			return "skip forecast at the end of month"
+		}
 		amount := StripDot(aws.StringValue(mv.Amount))
 		unit := Emojify(aws.StringValue(mv.Unit))
 		return fmt.Sprintf("%s%s", unit, amount)
